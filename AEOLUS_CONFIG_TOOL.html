@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<!--
+  NCD LTE Node — AEOLUS gateway — BLE Config Portal
+
+  Configures the AEOLUS strain-gauge gateway (CONFIG_DEVICE_TYPE_AEOLUS):
+  uplink MQTT vs HTTPS (PLP Insight, app-identical JSON), MQTT broker,
+  Insight URL/token, wake interval, and the BLE strain-gauge sensors it
+  visits ("aeolus_set"). Open in Chrome (desktop or Android) and click
+  Connect while the gateway is in its config window (first 180 s after a
+  reset, advertising as "WT-AEO-<id>"). Talks the GATT config service in
+  src/ble_config_svc.c — same JSON commands as the MQTT topic aeolus/<gw>/cmd.
+
+  Web Bluetooth needs a secure context: file:// works in Chrome; if your
+  browser refuses, serve with `python3 -m http.server` and open localhost.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NCD LTE Node — AEOLUS Gateway — BLE Config</title>
+<style>
+  :root {
+    --bg: #12161c; --panel: #1b222c; --line: #2c3644; --fg: #dbe4ee;
+    --dim: #8294a8; --acc: #38b2ac; --warn: #e8a13c; --err: #e06060;
+    --ok: #58c470; font-size: 15px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    padding: 1.2rem; max-width: 880px; margin-inline: auto;
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 1rem; letter-spacing: .03em; }
+  h1 small { color: var(--dim); font-weight: normal; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 1rem; margin-bottom: 1rem;
+  }
+  .panel h2 {
+    font-size: .8rem; margin: 0 0 .8rem; color: var(--acc);
+    text-transform: uppercase; letter-spacing: .1em;
+  }
+  .row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-bottom: .55rem; }
+  label { color: var(--dim); min-width: 9.5rem; font-size: .85rem; }
+  input[type=text], input[type=number], input[type=password], select {
+    background: #0e1319; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 5px; padding: .4rem .55rem; flex: 1; min-width: 8rem;
+    font: inherit; font-size: .85rem;
+  }
+  input:focus { outline: 1px solid var(--acc); }
+  button {
+    background: var(--acc); color: #08211f; border: 0; border-radius: 6px;
+    padding: .45rem 1rem; font: inherit; font-weight: 700; cursor: pointer;
+    font-size: .85rem;
+  }
+  button.secondary { background: #2c3644; color: var(--fg); font-weight: 400; }
+  button:disabled { opacity: .35; cursor: default; }
+  #status { font-weight: 700; }
+  #status.on  { color: var(--ok); }
+  #status.off { color: var(--err); }
+  #log {
+    background: #0b0f14; border: 1px solid var(--line); border-radius: 6px;
+    height: 12rem; overflow-y: auto; padding: .6rem; font-size: .78rem;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  #log .tx  { color: var(--dim); }
+  #log .rx  { color: var(--ok); }
+  #log .err { color: var(--err); }
+  #log .sys { color: var(--warn); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.2rem; }
+  @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+  progress { flex: 1; height: .55rem; }
+  .pemstate { font-size: .78rem; color: var(--dim); }
+  .pemstate b.yes { color: var(--ok); } .pemstate b.no { color: var(--err); }
+  table.sens { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  table.sens th, table.sens td { border-bottom: 1px solid var(--line); padding: .3rem .4rem; text-align: left; }
+  table.sens th { color: var(--dim); font-weight: normal; }
+  table.sens tr.sel td { background: #20303a; }
+  table.sens tr { cursor: pointer; }
+  .radio { display: flex; gap: 1.2rem; align-items: center; }
+  .radio label { min-width: 0; color: var(--fg); }
+  .hint { font-size: .78rem; color: var(--dim); }
+  .modebox { border-left: 3px solid var(--line); padding-left: .8rem; margin: .4rem 0 .8rem; }
+</style>
+</head>
+<body>
+<h1>NCD LTE Node <small>· AEOLUS gateway · BLE config portal</small></h1>
+
+<div class="panel">
+  <div class="row">
+    <button id="btnConnect">Connect</button>
+    <button id="btnConnectAll" class="secondary" title="Unfiltered chooser — use when the device doesn't appear in the normal list">Connect (show all)</button>
+    <button id="btnDisconnect" class="secondary" disabled>Disconnect</button>
+    <button id="btnRefresh" class="secondary" disabled>Refresh info</button>
+    <span>Device: <span id="status" class="off">disconnected</span></span>
+    <span class="pemstate" id="pemState"></span>
+  </div>
+  <div class="row" style="margin:0">
+    <span class="pemstate" id="devInfo">Reset the gateway, then Connect within its 3-minute config window (it advertises as WT-AEO-&lt;id&gt;). The window is a fixed 3 minutes from the reset — apply your changes promptly. Sensor visits pause while the window is open.</span>
+  </div>
+  <div class="row" style="margin:0">
+    <span class="pemstate" id="connState"></span>
+  </div>
+</div>
+
+<div class="panel" id="troublePanel" hidden>
+  <h2>Connection troubleshooting</h2>
+  <div id="troubleText" style="font-size:13px;line-height:1.8"></div>
+</div>
+
+<div class="panel">
+  <h2>Device info</h2>
+  <div class="grid2" id="infoGrid" style="font-size:13px;line-height:1.9">
+    <div>
+      <div><b>Device name:</b> <span id="i_name">—</span></div>
+      <div><b>Location:</b> <span id="i_loc">—</span></div>
+      <div><b>Device ID:</b> <span id="i_id">—</span></div>
+      <div><b>Firmware:</b> <span id="i_fw">—</span></div>
+      <div><b>Battery:</b> <span id="i_bat">—</span></div>
+      <div><b>Uplink:</b> <span id="i_uplink">—</span></div>
+      <div><b>Wake interval:</b> <span id="i_wake">—</span></div>
+    </div>
+    <div>
+      <div><b>Modem:</b> <span id="i_model">—</span></div>
+      <div><b>Modem FW:</b> <span id="i_mfw" style="word-break:break-all">—</span></div>
+      <div><b>IMEI:</b> <span id="i_imei">—</span></div>
+      <div><b>SIM ICCID:</b> <span id="i_iccid">—</span></div>
+      <div><b>Signal (last session):</b> <span id="i_sig">—</span></div>
+      <div><b>MQTT broker:</b> <span id="i_cred">—</span></div>
+      <div><b>Insight:</b> <span id="i_ins">—</span></div>
+      <div><b>SD card:</b> <span id="i_sd">—</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Uplink — where recordings go</h2>
+  <div class="row radio">
+    <label><input type="radio" name="uplink" id="upMqtt" value="mqtt"> MQTT</label>
+    <label><input type="radio" name="uplink" id="upHttps" value="https"> HTTPS (PLP Insight, same as the phone app)</label>
+  </div>
+  <div class="hint" style="margin-bottom:.6rem">
+    <b>MQTT:</b> each recording as one <code>…/data</code> message (raw ADC, base64) plus a telematic message per visit.<br>
+    <b>HTTPS (default):</b> each recording as one POST to Insight <code>/api/v1/ingest</code> with the app's JSON (volts) — any size; no telematics.
+    MQTT stays connected for commands only (<code>aeolus/&lt;gw&gt;/cmd</code>), so you can still change settings remotely.
+  </div>
+  <div class="modebox">
+    <div class="hint" id="netSrc" style="margin-bottom:.4rem"></div>
+    <div class="grid2">
+      <div>
+        <div class="row"><label>MQTT broker host</label><input type="text" id="broker" placeholder="(keep current)"></div>
+        <div class="row"><label>MQTT broker port</label><input type="number" id="port" value="8883"></div>
+        <div class="row"><label>APN</label><input type="text" id="apn" placeholder="(keep current)"></div>
+      </div>
+      <div>
+        <div class="row"><label>MQTT username</label><input type="text" id="mqttuser" placeholder="(keep current)"></div>
+        <div class="row"><label>MQTT password</label><input type="password" id="mqttpass" placeholder="(leave blank to keep)"></div>
+      </div>
+    </div>
+  </div>
+  <div class="modebox">
+    <div class="row"><label>Insight URL</label><input type="text" id="iurl" maxlength="179" placeholder="https://…/api/v1/ingest  (blank = keep)"></div>
+    <div class="row"><label>Insight token</label><input type="password" id="itok" maxlength="255" placeholder="(leave blank to keep)"></div>
+    <div class="hint" id="insState"></div>
+  </div>
+  <div class="row">
+    <button id="btnNet" disabled>Apply uplink settings</button>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Gateway</h2>
+  <div class="grid2">
+    <div>
+      <div class="row"><label title="How often the gateway wakes to visit the sensors, collect recordings and upload. 60–65535 s; 0 = firmware default.">Wake interval (s)</label><input type="number" id="wake" min="0" max="65535"></div>
+    </div>
+    <div>
+      <div class="row"><label>Gateway name</label><input type="text" id="devname" maxlength="63"></div>
+      <div class="row"><label>Location</label><input type="text" id="devloc" maxlength="127"></div>
+    </div>
+  </div>
+  <div class="row">
+    <button id="btnDev" disabled>Apply gateway settings</button>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Sensors</h2>
+  <div class="hint" style="margin-bottom:.5rem">Sensors this gateway has visited since it started (click a row to fill the form).
+  Changes are queued on the gateway and written to the sensor on its <b>next visit</b> — after this config window closes — then
+  read back to verify (result on MQTT <code>…/&lt;mac&gt;/ack</code> and in the next telematic).</div>
+  <div style="overflow-x:auto"><table class="sens" id="sensTable">
+    <thead><tr><th>MAC</th><th>Name</th><th>FW</th><th>Batt</th><th>Rate</th><th>Length</th><th>Every</th><th>RSSI</th><th>Seen</th></tr></thead>
+    <tbody id="sensBody"><tr><td colspan="9" class="hint">— connect to list sensors —</td></tr></tbody>
+  </table></div>
+  <div class="grid2" style="margin-top:.7rem">
+    <div>
+      <div class="row"><label>Sensor MAC</label><input type="text" id="smac" placeholder="AA:BB:CC:DD:EE:FF"></div>
+      <div class="row"><label>Sample rate (Hz)</label><input type="number" id="sodr" min="1" placeholder="(no change)"></div>
+      <div class="row"><label>Recording length (s)</label><input type="number" id="sdur" min="1" max="255" placeholder="(no change)"></div>
+    </div>
+    <div>
+      <div class="row"><label>Recording every (min)</label><input type="number" id="sint" min="1" max="255" placeholder="(no change)"></div>
+      <div class="row"><label>Sensor name</label><input type="text" id="sname" maxlength="28" placeholder="(no change)"></div>
+      <div class="row"><label>Reboot sensor</label><input type="checkbox" id="sreboot"></div>
+    </div>
+  </div>
+  <div class="row">
+    <button id="btnSens" disabled>Queue sensor changes</button>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Firmware updates (LTE, automatic)</h2>
+  <div class="hint" style="margin-bottom:.5rem">The gateway reads a small version file
+  (<code>latest.json</code>: <code>{"version":"V1.73","url":"https://…/AEOLUS_V1.73.bin"}</code>) on its first
+  cycle after a restart and then every N days. If it lists a newer version, the gateway downloads the image,
+  restarts into it and keeps it once it reaches the cloud; otherwise it goes back to the previous firmware.
+  Running: <b id="otaFw">—</b></div>
+  <div class="grid2">
+    <div>
+      <div class="row"><label>Automatic updates</label><input type="checkbox" id="aota"></div>
+      <div class="row"><label>Check every (days)</label><input type="number" id="aotd" min="1" max="365"></div>
+    </div>
+    <div>
+      <div class="row"><label title="Leave blank for the firmware default shown as the placeholder">Version file URL</label>
+        <input type="text" id="aotu" maxlength="175" placeholder="(firmware default)"></div>
+      <div class="row"><label><input type="checkbox" id="aotuDef"> use the firmware default</label></div>
+    </div>
+  </div>
+  <div class="row"><button id="btnAota" disabled>Apply update settings</button></div>
+  <div class="row"><label>Install now from image URL</label>
+    <input type="text" id="otaUrl" maxlength="179" placeholder="https://…/AEOLUS_V1.73.bin" style="flex:1;min-width:14rem;">
+    <button id="btnOta" class="secondary" disabled>Install from URL</button></div>
+  <div class="row"><span id="otaState" class="hint">Runs at the end of the gateway's next cycle, after this
+  config window closes. Each URL gets at most 3 tries.</span></div>
+</div>
+
+<div id="fwBanner" hidden
+     style="background:#c0392b;color:#fff;padding:10px 14px;border-radius:8px;margin:10px 0;font-weight:600;">
+  New firmware is running <u>unconfirmed</u>. The gateway keeps it automatically once it reaches the
+  cloud, and goes back to the previous firmware after 3 cycles without it. <i>Confirm running image</i> keeps it now.
+</div>
+
+<div class="panel">
+  <h2>Firmware update (BLE)</h2>
+  <div class="row"><label for="fFw">Signed image (app_update.bin)</label>
+    <input type="file" id="fFw" accept=".bin,application/octet-stream" style="flex:1;min-width:14rem;">
+    <button id="btnFwPick" class="secondary" type="button">Choose file…</button></div>
+  <div class="row">
+    <button id="btnFw" disabled>Upload &amp; install</button>
+    <button id="btnFwSlots" class="secondary" disabled>Read slots</button>
+    <button id="btnFwConfirm" class="secondary" disabled>Confirm running image</button>
+    <progress id="fwProg" value="0" max="100" hidden></progress>
+  </div>
+  <div class="row"><span id="fwState" class="hint">Uploads to the spare slot, reboots into it on a trial basis.
+  After the device reboots, reconnect and press <b>Confirm running image</b> — an unconfirmed
+  image rolls back automatically on the next reboot.</span></div>
+</div>
+
+<div class="panel">
+  <h2>Log</h2>
+  <div id="log"></div>
+</div>
+
+<script>
+'use strict';
+const SVC  = '7c3a0001-9db3-4a2c-a78b-2e91c1a3f7d5';
+const CMD  = '7c3a0002-9db3-4a2c-a78b-2e91c1a3f7d5';
+const BULK = '7c3a0003-9db3-4a2c-a78b-2e91c1a3f7d5';
+const INFO = '7c3a0004-9db3-4a2c-a78b-2e91c1a3f7d5';
+const CHUNK = 180;   /* payload bytes per BULK write; safe under 247 MTU */
+
+/* mcumgr SMP over BLE (standard Zephyr/MCUboot DFU service) */
+const SMP_SVC = '8d53dc1d-1db7-4cd3-868b-8a527460aa84';
+const SMP_CHR = 'da2e7828-fbce-4e01-ae9e-261174997c48';
+
+let dev = null, chCmd = null, chBulk = null, chInfo = null;
+let pendingResolve = null;
+
+const $ = id => document.getElementById(id);
+const enc = new TextEncoder(), dec = new TextDecoder();
+
+function log(msg, cls) {
+  const el = document.createElement('div');
+  if (cls) el.className = cls;
+  el.textContent = `${new Date().toTimeString().slice(0,8)}  ${msg}`;
+  $('log').appendChild(el);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+/* ── Hardening core (2026-08-31) ─────────────────────────────────────────────
+ * Every GATT op: (a) runs under a deadline so a Chrome-side stall surfaces as
+ * an error instead of silently poisoning the per-device op queue forever,
+ * (b) holds a busy flag so user clicks can't stack ops behind a stuck one. */
+let busy = false;
+async function gatt(label, ms, fn) {
+  if (busy) { log(`${label}: another operation is in progress — wait for it`, 'err'); throw new Error('busy'); }
+  busy = true;
+  setState(label + ' …');
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error(`${label}: timed out`)), ms)),
+    ]);
+  } finally { busy = false; setState(''); }
+}
+
+function setState(t) { $('connState').textContent = t; }
+
+/* Failure triage: turn raw Web Bluetooth errors into the exact next step. */
+function explainFailure(msg) {
+  const T = $('troubleText'), P = $('troublePanel');
+  let html = '';
+  if (/removed pairing|Authentication|insufficient/i.test(msg)) {
+    html = 'The device was re-flashed and no longer recognizes this computer\'s old pairing.<br>' +
+           '<b>Fix:</b> System Settings → Bluetooth → find the WT-AEO entry → <b>Forget This Device</b>, ' +
+           'then reset the device and Connect again (accept the pairing prompt).';
+  } else if (/User cancelled|chooser/i.test(msg)) {
+    html = 'The device chooser closed without a selection. Note: the chooser closes itself if this ' +
+           'window loses focus — stay on this window while picking.<br>If the device is missing from ' +
+           'the list: press its reset button (3-minute window), wait ~10 s. Still missing after two ' +
+           'tries? Quit the browser fully (⌘Q / close all) and reopen — the browser\'s Bluetooth ' +
+           'scanner can wedge and only a full restart clears it.';
+  } else if (/Unsupported device/i.test(msg)) {
+    html = 'The device stopped advertising before the connection completed — its 3-minute ' +
+           'config window most likely expired while the chooser was open.<br>' +
+           '<b>Fix:</b> press the device\'s reset button again and click it in the chooser ' +
+           'as soon as it appears.';
+  } else if (/GATT Server is disconnected|disconnected/i.test(msg)) {
+    html = 'The link dropped right after connecting (usually radio contention). ' +
+           '<b>Press Connect again</b> while the 3-minute window is still open; ' +
+           'if it has closed, reset the gateway first.';
+  } else if (/timed out/i.test(msg)) {
+    html = 'The operation stalled. Press the device\'s reset button and Connect again. If this keeps ' +
+           'happening, fully restart the browser (its Bluetooth engine may be wedged).';
+  }
+  P.hidden = !html;
+  if (html) T.innerHTML = html;
+}
+
+/* Silent auto-reconnect: Web Bluetooth can re-attach to a granted device
+ * without the chooser — works while the gateway's fixed 3-minute config
+ * window (from its reset) is still open. */
+let wantReconnect = false;
+let dfuAwaitingConfirm = false;
+async function autoReconnect() {
+  if (!dev || !wantReconnect) return false;
+  for (let i = 1; i <= 3; i++) {
+    setState(`reconnecting (attempt ${i}/3) …`);
+    try {
+      await dev.gatt.connect();
+      await attachServices();
+      log(`auto-reconnected (attempt ${i})`, 'sys');
+      if (dfuAwaitingConfirm) {
+        dfuAwaitingConfirm = false;
+        chSmp = null;   /* stale handle from before the reboot */
+        setTimeout(async () => {
+          try { await fwReadSlots(false); }   /* shows the unconfirmed banner */
+          catch (e) { log(`post-update slot read: ${e.message}`, 'err'); }
+          log('new firmware is on TRIAL — verify, then press "Confirm running image"', 'sys');
+        }, 1500);
+      }
+      return true;
+    } catch (e) {
+      log(`reconnect attempt ${i}: ${e.message}`, 'err');
+      await new Promise(r => setTimeout(r, 3000 * i));
+    }
+  }
+  setState('');
+  return false;
+}
+
+function setConnected(on) {
+  $('status').textContent = on ? (dev?.name || 'connected') : 'disconnected';
+  $('status').className = on ? 'on' : 'off';
+  if (on) { $('troublePanel').hidden = true; }
+  for (const id of ['btnNet', 'btnDev', 'btnSens', 'btnAota', 'btnOta', 'btnFw', 'btnFwSlots', 'btnFwConfirm']) $(id).disabled = !on;
+  if (!on) { chSmp = null; smpRx = null; smpPending = null; }
+  $('btnDisconnect').disabled = !on;
+  $('btnRefresh').disabled = !on;
+  $('btnConnect').disabled = on;
+}
+
+function onNotify(ev) {
+  const txt = dec.decode(ev.target.value);
+  log(`<= ${txt}`, 'rx');
+  let obj = null;
+  try { obj = JSON.parse(txt); } catch (_) {}
+  if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(obj); }
+}
+
+/* Send a command and await the notified {"resp":N} (5 s timeout). */
+function sendCmd(obj) {
+  return new Promise(async (resolve, reject) => {
+    const json = JSON.stringify(obj);
+    /* never echo secrets into the on-page log */
+    log(`=> ${json.replace(/"(token|pass)":"[^"]*"/g, '"$1":"***"')}`, 'tx');
+    const t = setTimeout(() => { pendingResolve = null; reject(new Error('timeout')); }, 5000);
+    pendingResolve = (r) => { clearTimeout(t); resolve(r); };
+    try {
+      await chCmd.writeValueWithResponse(enc.encode(json));
+    } catch (e) { clearTimeout(t); pendingResolve = null; reject(e); }
+  });
+}
+
+async function expectOk(obj, label) {
+  const r = await sendCmd(obj);
+  if (!r || r.resp !== 0) throw new Error(`${label}: device answered ${JSON.stringify(r)}`);
+}
+
+async function attachServices() {
+  const gatt = dev.gatt;
+  const svc  = await gatt.getPrimaryService(SVC);
+  chCmd  = await svc.getCharacteristic(CMD);
+  chBulk = await svc.getCharacteristic(BULK);
+  chInfo = await svc.getCharacteristic(INFO);
+  await chCmd.startNotifications();
+  chCmd.addEventListener('characteristicvaluechanged', onNotify);
+  setConnected(true);
+  wantReconnect = true;
+  log(`connected to ${dev.name}`, 'sys');
+  await refreshInfo();
+  /* NOTE: no automatic SMP access here — a hung service discovery poisons
+   * Chrome's per-device GATT queue and every later button press with it.
+   * The unconfirmed-image banner appears via the Read slots button. */
+}
+
+async function connect(showAll) {
+  try {
+    setState('opening device chooser …');
+    dev = await navigator.bluetooth.requestDevice(showAll === true
+      ? { acceptAllDevices: true, optionalServices: [SVC, SMP_SVC] }
+      : { filters: [{ services: [SVC] }, { namePrefix: 'WT-AEO' }],
+          optionalServices: [SVC, SMP_SVC] });
+    dev.addEventListener('gattserverdisconnected', async () => {
+      setConnected(false);
+      log('disconnected', 'sys');
+      if (wantReconnect) {
+        const ok = await autoReconnect();
+        if (!ok) { log('auto-reconnect gave up — reset the device and Connect', 'err');
+                   explainFailure('disconnected'); }
+      }
+    });
+    await gatt('connecting', 20000, async () => {
+      await dev.gatt.connect();
+      await attachServices();
+    });
+  } catch (e) {
+    setState('');
+    log(`connect failed: ${e.message}`, 'err');
+    explainFailure(e.message);
+  }
+}
+
+async function refreshInfo() {
+  const v = await Promise.race([
+    chInfo.readValue(),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('info read timed out')), 8000)),
+  ]);
+  const txt = dec.decode(v);
+  log(`info: ${txt}`, 'rx');
+  let i;
+  try { i = JSON.parse(txt); } catch (e) { log(`info: bad JSON (${e.message})`, 'err'); return; }
+  if (i.type && i.type !== 'aeolus') {
+    log(`this is a "${i.type}" device — use the matching portal page`, 'err');
+  }
+  const dash = (v) => (v === undefined || v === null || v === '' ? '—' : v);
+  const https = i.uplink === 'https';
+  $('devInfo').textContent = `fw ${i.fw} · uplink ${https ? 'HTTPS (Insight)' : 'MQTT'} · wake ${i.wake_sec || 'default'} s`;
+  $('i_name').textContent  = dash(i.name);
+  $('i_loc').textContent   = dash(i.loc);
+  $('i_id').textContent    = dash(i.id);
+  $('i_fw').textContent    = dash(i.fw);
+  $('i_model').textContent = dash(i.model);
+  $('i_mfw').textContent   = dash(i.mfw);
+  $('i_imei').textContent  = dash(i.imei);
+  $('i_iccid').textContent = dash(i.iccid);
+  $('i_sig').textContent   = (i.sig >= 0) ? `${i.sig} %` : 'no session yet';
+  $('i_bat').textContent   = i.bat_ok
+    ? `${(i.bat_mv / 1000).toFixed(2)} V · ${i.bat_pct} %`
+    : 'gauge not responding';
+  $('i_sd').textContent    = i.sd
+    ? `present · ${i.sd_free} MB free · ${i.sdq ?? 0} recording(s) queued for upload`
+    : 'not detected (uploads while draining)';
+  $('i_uplink').textContent = https
+    ? 'HTTPS → Insight (app JSON), MQTT for commands'
+    : 'MQTT (data + telematics + commands)';
+  $('i_wake').textContent  = i.wake_sec ? `${i.wake_sec} s` : 'firmware default';
+  const fromCfg = i.net_src === 'config';
+  $('i_cred').textContent  = fromCfg
+    ? `${i.broker}:${i.port} · user ${i.user ? `"${i.user}"` : 'not set'} · password ${i.pwd ? 'stored' : 'not set'}`
+    : 'built into the firmware';
+  $('i_ins').textContent   = `URL ${i.iurl ? 'set' : 'firmware default'} · token ${i.itok ? 'stored' : 'firmware default'}` +
+                             (i.irdy ? '' : ' · NOT READY (no URL/token)');
+  $('netSrc').textContent  = fromCfg
+    ? 'MQTT broker set from this portal / a command.'
+    : 'MQTT broker: using the one built into the firmware. Fill these in only to change it (host, port, user and password together).';
+  $('insState').innerHTML  = i.irdy
+    ? 'Insight ready — URL ' + (i.iurl ? 'set here' : 'from firmware') + ', token ' + (i.itok ? 'stored here' : 'from firmware') + '.'
+    : '<b class="no">Set an Insight URL and token before choosing HTTPS.</b>';
+  $('upMqtt').checked  = !https;
+  $('upHttps').checked = https;
+  $('upHttps').dataset.cur = https ? 'https' : 'mqtt';
+  $('iurl').value    = i.iurl ?? '';
+  $('mqttuser').value = fromCfg ? (i.user ?? '') : '';
+  $('broker').value   = fromCfg ? (i.broker ?? '') : '';
+  $('port').value     = fromCfg ? (i.port ?? 8883) : 8883;
+  $('apn').value      = '';
+  $('wake').value     = i.wake_sec ?? '';
+  $('devname').value  = i.name ?? '';
+  $('devloc').value   = i.loc ?? '';
+  $('otaFw').textContent = i.fw ?? '—';
+  $('aota').checked   = !!i.aota;
+  $('aotd').value     = i.aotd || 1;
+  $('aotu').value     = i.aotu ?? '';
+  $('aotu').placeholder = i.aotdef ? `default: ${i.aotdef}` : '(firmware default)';
+  $('aotuDef').checked = !i.aotu;
+  renderSensors(i.sensors || []);
+}
+
+function ago(s) {
+  if (s < 0 || s === undefined) return '—';
+  if (s < 90) return `${s} s ago`;
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  return `${(s / 3600).toFixed(1)} h ago`;
+}
+
+function renderSensors(list) {
+  const tb = $('sensBody');
+  tb.innerHTML = '';
+  if (!list.length) {
+    tb.innerHTML = '<tr><td colspan="9" class="hint">no sensors visited yet since the gateway started</td></tr>';
+    return;
+  }
+  for (const s of list) {
+    const tr = document.createElement('tr');
+    const cells = [s.mac, s.name || '—', s.fw, (s.batt >= 0 ? `${s.batt} %` : '—'),
+                   s.odr ? `${s.odr} Hz` : '—', s.dur ? `${s.dur} s` : '—',
+                   s.int ? `${s.int} min` : '—', `${s.rssi} dBm`, ago(s.age)];
+    for (const c of cells) { const td = document.createElement('td'); td.textContent = c; tr.appendChild(td); }
+    tr.onclick = () => {
+      for (const r of tb.querySelectorAll('tr')) r.classList.remove('sel');
+      tr.classList.add('sel');
+      $('smac').value = s.mac;
+      $('sodr').placeholder = s.odr ? `${s.odr} (now)` : '(no change)';
+      $('sdur').placeholder = s.dur ? `${s.dur} (now)` : '(no change)';
+      $('sint').placeholder = s.int ? `${s.int} (now)` : '(no change)';
+      $('sname').placeholder = s.name ? `${s.name} (now)` : '(no change)';
+    };
+    tb.appendChild(tr);
+  }
+}
+
+async function applyNet() {
+  try {
+    /* Insight first, so "HTTPS" is accepted in the same apply. */
+    const iurl = $('iurl').value.trim();
+    if (iurl && !/^https:\/\/.{2,}/.test(iurl)) throw new Error('Insight URL must start with https://');
+    if (iurl) await expectOk({ cmd: 'insight', url: iurl }, 'insight url');
+    const itok = $('itok').value;
+    if (itok) await expectOk({ cmd: 'insight', token: itok }, 'insight token');
+    $('itok').value = '';
+    const host = $('broker').value.trim();
+    const user = $('mqttuser').value.trim();
+    const pass = $('mqttpass').value;
+    if (host) {
+      const port = parseInt($('port').value, 10);
+      await expectOk({ cmd: 'broker', host, port }, 'broker');
+    }
+    if (user || pass) {
+      const c = { cmd: 'mqttcred' };
+      if (user) c.user = user;
+      if (pass) c.pass = pass;
+      await expectOk(c, 'mqttcred');
+    }
+    $('mqttpass').value = '';
+    const apn = $('apn').value.trim();
+    if (apn) await expectOk({ cmd: 'apn', val: apn }, 'apn');
+    const mode = $('upHttps').checked ? 'https' : 'mqtt';
+    if (mode !== $('upHttps').dataset.cur) {
+      const r = await sendCmd({ cmd: 'uplink', val: mode });
+      if (!r || r.resp !== 0) {
+        throw new Error(mode === 'https'
+          ? 'gateway refused HTTPS — set an Insight URL and token first'
+          : `uplink: device answered ${JSON.stringify(r)}`);
+      }
+    }
+    log(`uplink settings applied (${mode.toUpperCase()}) — used from the next wake`, 'sys');
+    await refreshInfo();
+  } catch (e) { log(e.message, 'err'); }
+}
+
+async function applyDev() {
+  try {
+    const w = $('wake').value;
+    if (w !== '') {
+      const wv = parseInt(w, 10);
+      if (!(wv === 0 || (wv >= 60 && wv <= 65535))) throw new Error('wake interval: 0 or 60..65535 s');
+      await expectOk({ cmd: 'wake', val: wv }, 'wake');
+    }
+    const name = $('devname').value, loc = $('devloc').value;
+    if (name || loc) {
+      const m = { cmd: 'meta' };
+      if (name) m.deviceName = name;
+      if (loc)  m.location = loc;
+      await expectOk(m, 'meta');
+    }
+    log('gateway settings applied', 'sys');
+    await refreshInfo();
+  } catch (e) { log(e.message, 'err'); }
+}
+
+async function applyAota() {
+  try {
+    const d = parseInt($('aotd').value, 10);
+    if (!(d >= 1 && d <= 365)) throw new Error('check every: 1..365 days');
+    const m = { cmd: 'auto_ota', val: $('aota').checked ? 1 : 0, days: d };
+    const u = $('aotu').value.trim();
+    if ($('aotuDef').checked) m.url = '';
+    else if (u) {
+      if (!/^https?:\/\//.test(u) || u.length > 175) throw new Error('version file URL: http(s)://…, at most 175 characters');
+      m.url = u;
+    }
+    await expectOk(m, 'auto_ota');
+    log(`automatic updates ${m.val ? 'on' : 'off'}, every ${d} day(s)` +
+        (m.url === '' ? ', firmware default URL' : m.url ? `, ${m.url}` : ''), 'sys');
+    await refreshInfo();
+  } catch (e) { log(e.message, 'err'); }
+}
+
+async function applyOta() {
+  try {
+    const url = $('otaUrl').value.trim();
+    if (!/^https?:\/\//.test(url) || url.length > 180) throw new Error('image URL: http(s)://…, at most 180 characters');
+    const r = await sendCmd({ cmd: 'ota_ready', url });
+    if (r && r.resp === 0) {
+      $('otaState').textContent = 'Armed — the gateway downloads it at the end of its next cycle and restarts.';
+      log('update armed: ' + url, 'sys');
+    } else {
+      $('otaState').textContent = 'Refused: ' + JSON.stringify(r) + ' — this URL already used its 3 tries or was installed.';
+      log('update refused: ' + JSON.stringify(r), 'err');
+    }
+  } catch (e) { log(e.message, 'err'); }
+}
+
+async function applySensor() {
+  try {
+    const mac = $('smac').value.trim().toUpperCase();
+    if (!/^([0-9A-F]{2}:?){5}[0-9A-F]{2}$/.test(mac)) throw new Error('sensor MAC: AA:BB:CC:DD:EE:FF');
+    const q = [];
+    const odr = $('sodr').value, dur = $('sdur').value, intv = $('sint').value, nm = $('sname').value.trim();
+    if (odr !== '')  q.push({ param: 'odr', value: parseInt(odr, 10) });
+    if (dur !== '')  q.push({ param: 'duration', value: parseInt(dur, 10) });
+    if (intv !== '') q.push({ param: 'interval', value: parseInt(intv, 10) });
+    if (nm)          q.push({ param: 'name', value: nm });
+    if ($('sreboot').checked) q.push({ param: 'reboot' });   /* applied last by the gateway */
+    if (!q.length) throw new Error('nothing to change — fill at least one field');
+    for (const c of q) {
+      if (c.value !== undefined && typeof c.value === 'number' && !(c.value >= 0)) throw new Error(`${c.param}: bad number`);
+      await expectOk({ cmd: 'aeolus_set', mac, ...c }, `aeolus_set ${c.param}`);
+    }
+    log(`${q.length} change(s) queued for ${mac} — applied on its next visit`, 'sys');
+    for (const id of ['sodr', 'sdur', 'sint', 'sname']) $(id).value = '';
+    $('sreboot').checked = false;
+  } catch (e) { log(e.message, 'err'); }
+}
+
+/* ── mcumgr SMP client (CBOR over the standard DFU GATT service) ─────────── */
+
+function cborEnc(v) {
+  const out = [];
+  const hdr = (major, n) => {
+    if (n < 24) out.push((major << 5) | n);
+    else if (n < 0x100) out.push((major << 5) | 24, n);
+    else if (n < 0x10000) out.push((major << 5) | 25, n >> 8, n & 0xff);
+    else out.push((major << 5) | 26, (n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff);
+  };
+  const enc1 = (x) => {
+    if (x === null) { out.push(0xf6); }
+    else if (x === true) { out.push(0xf5); }
+    else if (x === false) { out.push(0xf4); }
+    else if (typeof x === 'number') {
+      if (x >= 0) hdr(0, x); else hdr(1, -1 - x);
+    }
+    else if (typeof x === 'string') { const b = enc.encode(x); hdr(3, b.length); out.push(...b); }
+    else if (x instanceof Uint8Array) { hdr(2, x.length); out.push(...x); }
+    else { const k = Object.keys(x); hdr(5, k.length); for (const key of k) { enc1(key); enc1(x[key]); } }
+  };
+  enc1(v);
+  return new Uint8Array(out);
+}
+
+function cborDec(buf) {
+  /* Handles the indefinite-length maps/arrays/strings (0x9f/0xbf/0x5f/0x7f
+   * ... 0xff) that the device's zcbor encoder emits. The old decoder read
+   * those as a ~2^64 length and spun forever, hanging the tab at 100% CPU
+   * on the first SMP reply (2026-10-08) — the PC tool's ciborium was fine.
+   * Every read is bounds-checked: bad input throws, never loops. */
+  let p = 0;
+  const u8 = (buf instanceof Uint8Array) ? buf : new Uint8Array(buf);
+  const BRK = Symbol('break');
+  const byte = () => { if (p >= u8.length) throw new Error('CBOR: truncated'); return u8[p++]; };
+  const arg = (ib) => {
+    const n = ib & 0x1f;
+    if (n < 24) return n;
+    if (n === 24) return byte();
+    if (n === 25) return (byte() << 8) | byte();
+    if (n === 26) return ((byte() * 0x1000000) + (byte() << 16) + (byte() << 8) + byte());
+    if (n === 27) { let v = 0; for (let i = 0; i < 8; i++) v = v * 256 + byte(); return v; }
+    if (n === 31) return -1;                  /* indefinite length */
+    throw new Error('CBOR: bad length');
+  };
+  const bytesOf = (n) => { if (p + n > u8.length) throw new Error('CBOR: truncated'); const v = u8.slice(p, p + n); p += n; return v; };
+  const one = () => {
+    const ib = byte(), major = ib >> 5;
+    if (ib === 0xff) return BRK;
+    if (major === 0) return arg(ib);
+    if (major === 1) return -1 - arg(ib);
+    if (major === 2 || major === 3) {
+      const n = arg(ib);
+      let v;
+      if (n >= 0) v = bytesOf(n);
+      else {                                  /* chunked string */
+        const parts = []; let c;
+        while ((c = one()) !== BRK) parts.push(typeof c === 'string' ? enc.encode(c) : c);
+        v = new Uint8Array(parts.reduce((a, x) => a + x.length, 0));
+        let o = 0; for (const x of parts) { v.set(x, o); o += x.length; }
+      }
+      return major === 3 ? dec.decode(v) : v;
+    }
+    if (major === 4) {
+      const n = arg(ib), a = [];
+      if (n >= 0) { for (let i = 0; i < n; i++) a.push(one()); }
+      else { let x; while ((x = one()) !== BRK) a.push(x); }
+      return a;
+    }
+    if (major === 5) {
+      const n = arg(ib), m = {};
+      if (n >= 0) { for (let i = 0; i < n; i++) { const k = one(); m[k] = one(); } }
+      else { let k; while ((k = one()) !== BRK) m[k] = one(); }
+      return m;
+    }
+    if (major === 6) { arg(ib); return one(); }   /* tag: ignore, keep value */
+    const n = ib & 0x1f;                      /* major 7: simple/float */
+    if (n === 20) return false; if (n === 21) return true;
+    if (n === 22 || n === 23) return null;
+    if (n === 24) { byte(); return null; }
+    if (n === 25) { bytesOf(2); return 0; } if (n === 26) { bytesOf(4); return 0; }
+    if (n === 27) { bytesOf(8); return 0; }
+    return null;
+  };
+  return one();
+}
+
+let chSmp = null, smpSeq = 0, smpRx = null, smpPending = null;
+
+async function smpAttach() {
+  if (chSmp) return;
+  const svc = await dev.gatt.getPrimaryService(SMP_SVC);
+  chSmp = await svc.getCharacteristic(SMP_CHR);
+  await chSmp.startNotifications();
+  chSmp.addEventListener('characteristicvaluechanged', (ev) => {
+    const b = new Uint8Array(ev.target.value.buffer, ev.target.value.byteOffset, ev.target.value.byteLength);
+    smpRx = smpRx ? new Uint8Array([...smpRx, ...b]) : b;
+    if (smpRx.length < 8) return;
+    const need = 8 + ((smpRx[2] << 8) | smpRx[3]);
+    if (smpRx.length < need) return;
+    const frame = smpRx; smpRx = null;
+    if (smpPending) { const r = smpPending; smpPending = null; r(frame); }
+  });
+}
+
+function smpFrame(op, group, id, payload) {
+  const body = cborEnc(payload ?? {});
+  const f = new Uint8Array(8 + body.length);
+  f[0] = op; f[1] = 0; f[2] = body.length >> 8; f[3] = body.length & 0xff;
+  f[4] = group >> 8; f[5] = group & 0xff; f[6] = (smpSeq++) & 0xff; f[7] = id;
+  f.set(body, 8);
+  return f;
+}
+
+/* One SMP frame may span several GATT writes: send it as 180-byte
+ * write-without-response slices (each fits any ATT MTU; the SMP
+ * characteristic supports no other write type) and let the device
+ * reassemble (MCUMGR_TRANSPORT_BT_REASSEMBLY=y), as the native PC tool
+ * does. No pacing: the 2026-10-08 "renderer freeze" blamed on write bursts
+ * was really cborDec spinning on indefinite-length replies. If Chrome's
+ * write queue is momentarily full the write rejects — back off and retry. */
+/* Per-slice delay (ms). 0 = full speed; fwUpload switches to slow mode after
+ * the first lost/rejected frame, for links that drop bursts of writes. */
+let smpSliceDelay = 0;
+
+async function smpWrite(f) {
+  for (let i = 0; i < f.length; i += 180) {
+    for (let tries = 0; ; tries++) {
+      try { await chSmp.writeValueWithoutResponse(f.subarray(i, i + 180)); break; }
+      catch (e) {
+        if (tries >= 20) throw e;
+        await new Promise(res => setTimeout(res, 20));
+      }
+    }
+    if (smpSliceDelay) await new Promise(res => setTimeout(res, smpSliceDelay));
+  }
+}
+
+/* Drop and re-open the BLE link, then wait for the auto-reconnect. A lost
+ * write-without-response slice leaves the device's SMP reassembly buffer
+ * holding a partial frame, so every later frame is misaligned and fails;
+ * disconnecting is the only way to clear it. The image upload state on the
+ * device survives, so the upload resumes from the device's offset. */
+async function smpResync() {
+  smpPending = null; smpRx = null; chSmp = null;
+  try { dev.gatt.disconnect(); } catch (e) { /* already down */ }
+  const t0 = Date.now();
+  let sawDown = !dev.gatt.connected;
+  while (Date.now() - t0 < 30000) {
+    await new Promise(res => setTimeout(res, 500));
+    if (!dev.gatt.connected) sawDown = true;
+    if (sawDown && dev.gatt.connected && $('status').className === 'on') {
+      $('btnFw').disabled = true;   /* upload still running */
+      await new Promise(res => setTimeout(res, 800));   /* let discovery settle */
+      return;
+    }
+  }
+  throw new Error('link did not come back after resync (is the config window still open?)');
+}
+
+async function smpRequest(op, group, id, payload, timeoutMs) {
+  /* Arm the deadline BEFORE any Bluetooth call — a hung service discovery
+   * or write must surface as an error, never as a silent forever-stall. */
+  let done = false;
+  const guard = new Promise((_, reject) =>
+    setTimeout(() => { if (!done) { smpPending = null; smpRx = null;
+      reject(new Error('SMP timeout')); } }, timeoutMs || 10000));
+
+  const work = (async () => {
+    await smpAttach();
+    const f = smpFrame(op, group, id, payload);
+    const resp = new Promise((resolve, reject) => {
+      smpPending = (frame) => {
+        const r = cborDec(frame.subarray(8));
+        if (r && typeof r.rc === 'number' && r.rc !== 0) reject(new Error(`SMP rc=${r.rc}`));
+        else resolve(r);
+      };
+    });
+    await smpWrite(f);
+    return resp;
+  })();
+
+  try { return await Promise.race([work, guard]); }
+  finally { done = true; }
+}
+
+const hex = (u) => [...u].map(b => b.toString(16).padStart(2, '0')).join('');
+
+async function fwReadSlots(quiet) {
+  const r = await smpRequest(0, 1, 0, {}, 8000);
+  const imgs = r.images || [];
+  const line = imgs.map(im =>
+    `slot${im.slot}: v${im.version} ${im.active ? 'ACTIVE' : 'spare'}` +
+    `${im.confirmed ? ' confirmed' : ''}${im.pending ? ' pending' : ''}`).join(' · ');
+  $('fwState').textContent = line || 'no image info';
+  if (!quiet) log(`slots: ${line}`, 'rx');
+  const act = imgs.find(im => im.active) || imgs.find(im => im.slot === 0);
+  $('fwBanner').hidden = !(act && !act.confirmed);
+  return imgs;
+}
+
+async function fwUpload() {
+  const file = $('fFw').files[0];
+  if (!file) { log('no firmware file selected', 'err'); return; }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes.length > 670 * 1024) { log(`image too large (${bytes.length} B)`, 'err'); return; }
+  if (bytes[0] !== 0x3d || bytes[1] !== 0xb8) {    /* MCUboot magic 0x96f3b83d LE */
+    log('not a signed MCUboot image (wrong magic) — use app_update.bin', 'err'); return;
+  }
+  $('btnFw').disabled = true;
+  $('fwProg').hidden = false; $('fwProg').value = 0;
+  try {
+    log(`uploading ${file.name} (${bytes.length} B) ...`, 'sys');
+    let off = 0, frames = 0, nextPct = 2, fails = 0;
+    const MAX_FAILS = 8;   /* consecutive lost/rejected frames before giving up */
+    smpSliceDelay = 0;
+    const t0 = Date.now();
+    while (off < bytes.length) {
+      /* Big frames like the PC tool: ~2.4 KB of image per SMP request, sent
+       * as 180-byte GATT slices and reassembled on the device. Largest frame
+       * 2426 B incl. header/CBOR, under the 2475 B device netbuf. The old
+       * ~150 B frames could not finish inside the 180 s config window. */
+      const n = Math.min(off === 0 ? 2300 : 2400, bytes.length - off);
+      const payload = off === 0
+        ? { data: bytes.subarray(0, n), off: 0, len: bytes.length }
+        : { data: bytes.subarray(off, off + n), off };
+      /* A frame that gets no reply, or that the device rejects (it answers
+       * with the offset it really has), means slices were lost on the air.
+       * Resume instead of restarting: reconnect to clear the device's
+       * half-received frame, slow the slices down, and resend from the
+       * device's offset. (2026-10-26: customer upload restarted from 0 on
+       * every error and never finished.) */
+      let r = null, why = '';
+      try {
+        r = await smpRequest(2, 1, 1, payload, 15000);
+      } catch (e) {
+        if (/^SMP rc=/.test(e.message)) throw new Error(`device refused the image at offset ${off} (${e.message})`);
+        why = `no reply (${e.message})`;
+      }
+      const newOff = (r && typeof r.off === 'number') ? r.off : (r ? off + n : off);
+      if (!r || newOff <= off) {
+        if (r) why = `device is at offset ${newOff}`;
+        if (++fails > MAX_FAILS) {
+          throw new Error(`gave up at offset ${off} of ${bytes.length} after ${MAX_FAILS} retries ` +
+                          `(${why}) — move closer to the device or use the LTE update below`);
+        }
+        log(`  frame at ${off} lost: ${why} — reconnecting and resuming (retry ${fails}/${MAX_FAILS}, slow mode)`, 'err');
+        smpSliceDelay = 12;
+        if (r && newOff < off) off = newOff;   /* go back to where the device is */
+        await smpResync();
+        continue;
+      }
+      fails = 0;
+      off = newOff;
+      if (newOff <= off) throw new Error(`no progress at offset ${off}`);
+      off = newOff;
+      frames++;
+      $('fwProg').value = Math.round(100 * off / bytes.length);
+      /* Progress every 2 %, with speed and ETA, so a stall is obvious. */
+      const pct = Math.floor(100 * off / bytes.length);
+      if (pct >= nextPct || off >= bytes.length) {
+        const secs = (Date.now() - t0) / 1000;
+        const rate = off / Math.max(secs, 0.001);
+        log(`  upload ${pct}% (${off} B) — ${secs.toFixed(0)} s, ` +
+            `${(rate / 1024).toFixed(1)} KB/s, ~${((bytes.length - off) / rate).toFixed(0)} s left`, 'sys');
+        nextPct = pct + 2;
+      }
+      /* macrotask yield between frames so the page can paint progress */
+      await new Promise(res => setTimeout(res, 0));
+    }
+    log(`upload done in ${((Date.now() - t0) / 1000).toFixed(0)} s — marking for test boot`, 'sys');
+    const imgs = await fwReadSlots(true);
+    const spare = imgs.find(im => im.slot === 1);
+    if (!spare) throw new Error('no image in spare slot after upload');
+    /* Same image as the running one: the device finds the hash in the ACTIVE
+     * slot first and refuses to "test" the active slot (legacy rc=1). Say so
+     * plainly instead of reporting a failure (2026-10-08). */
+    const active = imgs.find(im => im.active);
+    if (active && hex(active.hash || []) === hex(spare.hash || [])) {
+      log(`this image (v${spare.version}) is already running on the device — nothing to install`, 'sys');
+      return;
+    }
+    await smpRequest(2, 1, 0, { hash: spare.hash, confirm: false }, 8000);
+    log('rebooting into new firmware (trial) — this page will reconnect automatically', 'sys');
+    dfuAwaitingConfirm = true;
+    await smpRequest(2, 0, 5, {}, 8000).catch(() => {});   /* os reset; link drops */
+  } catch (e) { log(`firmware update failed: ${e.message}`, 'err'); }
+  finally {
+    $('fwProg').hidden = true;
+    smpSliceDelay = 0;
+    $('btnFw').disabled = false;
+  }
+}
+
+async function fwConfirm() {
+  try {
+    const imgs = await fwReadSlots(true);
+    const act = imgs.find(im => im.active) || imgs.find(im => im.slot === 0);
+    if (!act) throw new Error('no active image reported');
+    if (act.confirmed) { log('running image is already confirmed', 'sys'); $('fwBanner').hidden = true; return; }
+    await smpRequest(2, 1, 0, { hash: act.hash, confirm: true }, 8000);
+    await fwReadSlots(true);
+    $('fwBanner').hidden = true;
+    log(`firmware v${act.version} confirmed — rollback disarmed`, 'sys');
+  } catch (e) { log(`confirm failed: ${e.message}`, 'err'); }
+}
+
+/* On every connect: warn loudly if the running image is unconfirmed —
+ * a forgotten Confirm means silent rollback at the next reboot. */
+async function fwCheckUnconfirmed() {
+  try {
+    const imgs = await fwReadSlots(true);
+    const act = imgs.find(im => im.active) || imgs.find(im => im.slot === 0);
+    const bad = !!(act && !act.confirmed);
+    $('fwBanner').hidden = !bad;
+    if (bad) log(`WARNING: firmware v${act.version} running UNCONFIRMED — confirm it or it reverts`, 'err');
+  } catch (_) { /* older firmware without SMP — nothing to check */ }
+}
+
+$('btnConnect').onclick = () => connect(false);
+$('btnConnectAll').onclick = () => connect(true);
+$('btnDisconnect').onclick = () => { wantReconnect = false; dev?.gatt?.disconnect(); };
+$('btnRefresh').onclick = () => refreshInfo().catch(e => log(e.message, 'err'));
+$('btnNet').onclick = () => gatt('applying uplink settings', 40000, applyNet).catch(() => {});
+$('btnDev').onclick = () => gatt('applying gateway settings', 20000, applyDev).catch(() => {});
+$('btnSens').onclick = () => gatt('queuing sensor changes', 40000, applySensor).catch(() => {});
+$('btnAota').onclick = () => gatt('applying update settings', 20000, applyAota).catch(() => {});
+$('btnOta').onclick = () => gatt('arming firmware update', 20000, applyOta).catch(() => {});
+$('btnFw').onclick = fwUpload;
+$('btnFwSlots').onclick = () => fwReadSlots(false).catch(e => log(e.message, 'err'));
+$('btnFwConfirm').onclick = fwConfirm;
+/* Explicit picker: never disabled, works even if the native input is
+ * squeezed by the flex layout on narrow windows. */
+$('btnFwPick').onclick = () => $('fFw').click();
+$('fFw').onchange = () => {
+  const f = $('fFw').files[0];
+  if (f) log(`firmware file selected: ${f.name} (${f.size} B)`, 'sys');
+};
+
+/* Load-time environment diagnostics */
+(() => {
+  const ua = navigator.userAgent;
+  const os = /Android/.test(ua) ? 'Android' : /Mac/.test(ua) ? 'macOS'
+           : /Win/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : 'unknown OS';
+  if (!navigator.bluetooth) {
+    log(`Web Bluetooth NOT available in this browser (${os}). Use Chrome or Edge — ` +
+        `note: iPhone/iPad Safari never supports it.`, 'err');
+    $('btnConnect').disabled = true;
+    $('btnConnectAll').disabled = true;
+  } else {
+    log(`ready — ${os}, Web Bluetooth available. Reset the gateway, then Connect.`, 'sys');
+  }
+})();
+</script>
+</body>
+</html>
