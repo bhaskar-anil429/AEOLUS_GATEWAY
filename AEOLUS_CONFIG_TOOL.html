@@ -2,7 +2,7 @@
 <!--
   NCD LTE Node — AEOLUS gateway — BLE Config Portal
 
-  Configures the AEOLUS strain-gauge gateway (CONFIG_DEVICE_TYPE_AEOLUS):
+  Configures the AEOLUS strain-gauge gateway:
   uplink MQTT vs HTTPS (PLP Insight, app-identical JSON), MQTT broker,
   Insight URL/token, wake interval, and the BLE strain-gauge sensors it
   visits ("aeolus_set"). Open in Chrome (desktop or Android) and click
@@ -234,6 +234,21 @@
     <button id="btnOta" class="secondary" disabled>Install from URL</button></div>
   <div class="row"><span id="otaState" class="hint">Runs at the end of the gateway's next cycle, after this
   config window closes. Each URL gets at most 3 tries.</span></div>
+  <h3 style="margin:.9rem 0 .3rem">Sensor firmware (sent over Bluetooth)</h3>
+  <div class="hint" style="margin-bottom:.5rem">The gateway downloads a PLP sensor update file (<code>.ncd</code>,
+  the file the phone app sends) and sends it to each sensor on another version after reading its recordings.
+  The sensor restarts to install it; the next visit confirms the new version. A <code>sensor</code> entry in the
+  version file above does the same automatically for sensors on an older version.
+  Now: <b id="sfwState">—</b></div>
+  <div class="row"><label>Sensor update file URL</label>
+    <input type="text" id="sfwUrl" maxlength="180" placeholder="https://…/sensors/PLP_SG_V10.ncd" style="flex:1;min-width:14rem;"></div>
+  <div class="row"><label title="Comma-separated, up to 16. Leave blank for every sensor of the matching type">Only these sensors (MACs)</label>
+    <input type="text" id="sfwMac" maxlength="300" placeholder="all sensors" style="flex:1;min-width:14rem;"></div>
+  <div class="row">
+    <label><input type="checkbox" id="sfwAuto"> follow the version file's sensor entry</label>
+    <button id="btnSfw" class="secondary" disabled>Send to sensors</button>
+    <button id="btnSfwAuto" class="secondary" disabled>Apply</button>
+    <button id="btnSfwCancel" class="secondary" disabled>Stop sending</button></div>
 </div>
 
 <div id="fwBanner" hidden
@@ -267,15 +282,13 @@
 'use strict';
 const SVC  = '7c3a0001-9db3-4a2c-a78b-2e91c1a3f7d5';
 const CMD  = '7c3a0002-9db3-4a2c-a78b-2e91c1a3f7d5';
-const BULK = '7c3a0003-9db3-4a2c-a78b-2e91c1a3f7d5';
 const INFO = '7c3a0004-9db3-4a2c-a78b-2e91c1a3f7d5';
-const CHUNK = 180;   /* payload bytes per BULK write; safe under 247 MTU */
 
 /* mcumgr SMP over BLE (standard Zephyr/MCUboot DFU service) */
 const SMP_SVC = '8d53dc1d-1db7-4cd3-868b-8a527460aa84';
 const SMP_CHR = 'da2e7828-fbce-4e01-ae9e-261174997c48';
 
-let dev = null, chCmd = null, chBulk = null, chInfo = null;
+let dev = null, chCmd = null, chInfo = null;
 let pendingResolve = null;
 
 const $ = id => document.getElementById(id);
@@ -375,7 +388,7 @@ function setConnected(on) {
   $('status').textContent = on ? (dev?.name || 'connected') : 'disconnected';
   $('status').className = on ? 'on' : 'off';
   if (on) { $('troublePanel').hidden = true; }
-  for (const id of ['btnNet', 'btnDev', 'btnSens', 'btnAota', 'btnOta', 'btnFw', 'btnFwSlots', 'btnFwConfirm']) $(id).disabled = !on;
+  for (const id of ['btnNet', 'btnDev', 'btnSens', 'btnAota', 'btnOta', 'btnSfw', 'btnSfwAuto', 'btnSfwCancel', 'btnFw', 'btnFwSlots', 'btnFwConfirm']) $(id).disabled = !on;
   if (!on) { chSmp = null; smpRx = null; smpPending = null; }
   $('btnDisconnect').disabled = !on;
   $('btnRefresh').disabled = !on;
@@ -413,7 +426,6 @@ async function attachServices() {
   const gatt = dev.gatt;
   const svc  = await gatt.getPrimaryService(SVC);
   chCmd  = await svc.getCharacteristic(CMD);
-  chBulk = await svc.getCharacteristic(BULK);
   chInfo = await svc.getCharacteristic(INFO);
   await chCmd.startNotifications();
   chCmd.addEventListener('characteristicvaluechanged', onNotify);
@@ -516,6 +528,15 @@ async function refreshInfo() {
   $('aotu').value     = i.aotu ?? '';
   $('aotu').placeholder = i.aotdef ? `default: ${i.aotdef}` : '(firmware default)';
   $('aotuDef').checked = !i.aotu;
+  if (i.sfw) {
+    const f = i.sfw;
+    const st = { none: 'no sensor file', pending: 'file armed, downloads at the end of the next cycle',
+                 staged: 'file ready, sending to sensors on their visits',
+                 download_failed: 'download failed 3 times' }[f.state] || f.state;
+    $('sfwState').textContent = st + (f.ver ? ` — v${f.ver}` : '') +
+        (f.state !== 'none' ? ` for ${f.for}` : '') + (f.url ? ` (${f.url})` : '');
+    $('sfwAuto').checked = !!f.auto;
+  }
   renderSensors(i.sensors || []);
 }
 
@@ -642,6 +663,27 @@ async function applyOta() {
       log('update refused: ' + JSON.stringify(r), 'err');
     }
   } catch (e) { log(e.message, 'err'); }
+}
+
+async function applySfw(m, what) {
+  try {
+    const r = await sendCmd(m);
+    if (r && r.resp === 0) log(what, 'sys');
+    else log('sensor firmware refused: ' + JSON.stringify(r), 'err');
+    await refreshInfo();
+  } catch (e) { log(e.message, 'err'); }
+}
+
+function sfwSend() {
+  const url = $('sfwUrl').value.trim();
+  const macs = $('sfwMac').value.toUpperCase().split(/[\s,;]+/).filter(Boolean);
+  if (!/^https?:\/\//.test(url) || url.length > 180) { log('sensor file URL: http(s)://…, at most 180 characters', 'err'); return Promise.resolve(); }
+  if (macs.length > 16 || macs.some(x => !/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(x))) {
+    log('sensor MACs: AA:BB:CC:DD:EE:FF, comma-separated, at most 16', 'err'); return Promise.resolve();
+  }
+  const m = { cmd: 'sensor_fw', url };
+  if (macs.length) m.mac = macs;
+  return applySfw(m, `sensor firmware armed for ${macs.length ? macs.join(', ') : 'all sensors'}: ${url}`);
 }
 
 async function applySensor() {
@@ -994,6 +1036,12 @@ $('btnDev').onclick = () => gatt('applying gateway settings', 20000, applyDev).c
 $('btnSens').onclick = () => gatt('queuing sensor changes', 40000, applySensor).catch(() => {});
 $('btnAota').onclick = () => gatt('applying update settings', 20000, applyAota).catch(() => {});
 $('btnOta').onclick = () => gatt('arming firmware update', 20000, applyOta).catch(() => {});
+$('btnSfw').onclick = () => gatt('arming sensor firmware', 20000, sfwSend).catch(() => {});
+$('btnSfwAuto').onclick = () => gatt('applying sensor update setting', 20000,
+    () => applySfw({ cmd: 'sensor_fw', auto: $('sfwAuto').checked ? 1 : 0 },
+                   'sensor updates from the version file ' + ($('sfwAuto').checked ? 'on' : 'off'))).catch(() => {});
+$('btnSfwCancel').onclick = () => gatt('stopping sensor firmware', 20000,
+    () => applySfw({ cmd: 'sensor_fw', cancel: 1 }, 'sensor firmware sending stopped')).catch(() => {});
 $('btnFw').onclick = fwUpload;
 $('btnFwSlots').onclick = () => fwReadSlots(false).catch(e => log(e.message, 'err'));
 $('btnFwConfirm').onclick = fwConfirm;

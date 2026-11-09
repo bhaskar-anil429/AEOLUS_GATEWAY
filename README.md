@@ -17,7 +17,7 @@ Each gateway downloads `aeolus/latest.json` on its first cycle after a restart,
 then every 24 hours by default:
 
 ```json
-{ "version": "V1.73", "url": "https://raw.githubusercontent.com/bhaskar-anil429/AEOLUS_GATEWAY/main/AEOLUS_V1.73.bin" }
+{ "version": "V1.75", "url": "https://raw.githubusercontent.com/bhaskar-anil429/AEOLUS_GATEWAY/main/AEOLUS_V1.75.bin" }
 ```
 
 If `version` is newer than the running firmware, the gateway:
@@ -47,7 +47,7 @@ MQTT, on `aeolus/<gateway-id>/cmd`:
 Install one specific image now:
 
 ```json
-{"cmd":"ota_ready","url":"https://raw.githubusercontent.com/bhaskar-anil429/AEOLUS_GATEWAY/main/AEOLUS_V1.73.bin"}
+{"cmd":"ota_ready","url":"https://raw.githubusercontent.com/bhaskar-anil429/AEOLUS_GATEWAY/main/AEOLUS_V1.75.bin"}
 ```
 
 The config page has the same settings under **Firmware updates (LTE, automatic)**.
@@ -114,8 +114,8 @@ secrets embedded.**
 ## Releasing a new version
 
 1. Bump `AEOLUS_FW_VERSION` in `src/devconfig.c`.
-2. Build the secret-free image (`-DCONFIG_DEVICE_TYPE_AEOLUS=y
-   -DEXTRA_CONF_FILE=aeolus.conf -DCONFIG_AEOLUS_EMBED_SECRETS=n`, sysbuild with
-   MCUboot). Take `zephyr/zephyr.signed.bin`.
+2. Build the secret-free image with `build_aeolus_ota.sh` (sysbuild with MCUboot,
+   `CONFIG_AEOLUS_EMBED_SECRETS=n`). It fails if the token or MQTT password is
+   in the image and writes `build_gw_ota/AEOLUS_V<x.yy>.bin`.
 3. Add it here as `AEOLUS_V<x.yy>.bin`.
 4. Update `aeolus/latest.json` (`version` and `url`) in the same commit.
