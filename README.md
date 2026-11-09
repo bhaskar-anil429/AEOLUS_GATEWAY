@@ -64,13 +64,16 @@ reports the result.
 Send a file to the sensors, over MQTT on `aeolus/<gateway-id>/cmd`:
 
 ```json
-{"cmd":"sensor_fw","url":"https://raw.githubusercontent.com/bhaskar-anil429/AEOLUS_GATEWAY/main/sensors/PLP_SG_V10.ncd","mac":"EB:0E:AD:F9:55:6F"}
+{"cmd":"sensor_fw","url":"https://raw.githubusercontent.com/bhaskar-anil429/AEOLUS_GATEWAY/main/sensors/PLP_SG_V10.ncd","mac":["EB:0E:AD:F9:55:6F","FC:FB:07:9E:63:ED"]}
 ```
 
 - `url`: any HTTPS location of a `.ncd` file, so the files can move to another
   host without a firmware change
-- `mac`: optional; leave it out to send the file to every sensor of the matching
-  type and hardware
+- `mac`: optional list of up to 16 sensors (a single MAC string also works);
+  leave it out to send the file to every sensor of the matching type and
+  hardware. The listed sensors are updated one by one as the gateway visits them.
+- the file is downloaded **once** and kept on the gateway (also across
+  restarts); every sensor gets it from there, so 10 sensors cost one download
 - a file from this command goes to sensors on any other version, so an older
   file rolls a sensor back
 - `{"cmd":"sensor_fw","cancel":1}` stops sending and forgets the file
