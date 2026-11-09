@@ -9,6 +9,7 @@ uploads them to PLP Insight (HTTPS) or MQTT.
 | `aeolus/latest.json` | Version file the gateways check for updates |
 | `AEOLUS_V*.bin` | Signed firmware update images (MCUboot) |
 | `AEOLUS_CONFIG_TOOL.html` | Config page: open in Chrome or Edge and connect to the gateway over Bluetooth |
+| `sensors/*.ncd` | PLP strain sensor updates (the same files the PLP phone app sends) |
 
 ## Automatic updates
 
@@ -50,6 +51,54 @@ Install one specific image now:
 ```
 
 The config page has the same settings under **Firmware updates (LTE, automatic)**.
+
+## Sensor firmware updates (gateway V1.75 and later)
+
+The gateway can update the PLP strain sensors it reads. It downloads a `.ncd`
+file over LTE, keeps it in its spare firmware slot, and sends it over Bluetooth
+to each sensor after reading that sensor's recordings. The sensor restarts and
+its bootloader checks the file and installs it; a bad file is rejected and the
+old firmware stays. On the next visit the gateway reads the sensor's version and
+reports the result.
+
+Send a file to the sensors, over MQTT on `aeolus/<gateway-id>/cmd`:
+
+```json
+{"cmd":"sensor_fw","url":"https://raw.githubusercontent.com/bhaskar-anil429/AEOLUS_GATEWAY/main/sensors/PLP_SG_V10.ncd","mac":"EB:0E:AD:F9:55:6F"}
+```
+
+- `url`: any HTTPS location of a `.ncd` file, so the files can move to another
+  host without a firmware change
+- `mac`: optional; leave it out to send the file to every sensor of the matching
+  type and hardware
+- a file from this command goes to sensors on any other version, so an older
+  file rolls a sensor back
+- `{"cmd":"sensor_fw","cancel":1}` stops sending and forgets the file
+- `{"cmd":"sensor_fw","auto":0}` / `1` ignores / follows the version file's
+  `sensor` entry
+
+Automatic: add a `sensor` entry to `aeolus/latest.json`. Gateways then send it
+to sensors on an **older** version:
+
+```json
+{ "version": "V1.75", "url": "https://.../AEOLUS_V1.75.bin",
+  "sensor": { "version": 10, "url": "https://.../sensors/PLP_SG_V10.ncd" } }
+```
+
+The location of `latest.json` itself is set with
+`{"cmd":"auto_ota","url":"https://.../latest.json"}`, so both the gateway and the
+sensor updates follow it if the files move.
+
+Results come back on `aeolus/<gateway-id>/<SENSOR-MAC>/ack` with `"param":"firmware"`
+and `status` `sent`, `installed`, `failed`, `transfer_failed`, `refused`,
+`no_update_service` or `wrong_sensor_type`, and on `aeolus/<gateway-id>/ack` for
+the download (`staged`, `download_failed`, `invalid_file`). A sensor gets 3 tries
+per file. A sensor whose type or hardware ID doesn't match the file is never sent it.
+
+| File | Sensor firmware |
+|---|---|
+| `sensors/PLP_SG_V10.ncd` | PLP strain sensor FW 10 (type 0x6B, hardware 50-58-0C) |
+| `sensors/PLP_SG_V11_TEST.ncd` | Test only: FW 10 code labelled version 11, to check the update path |
 
 ## Images here contain no credentials
 
