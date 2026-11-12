@@ -8,7 +8,7 @@
   visits ("aeolus_set"). Open in Chrome (desktop or Android) and click
   Connect while the gateway is in its config window (first 180 s after a
   reset, advertising as "WT-AEO-<id>"). Talks the GATT config service in
-  src/ble_config_svc.c — same JSON commands as the MQTT topic aeolus/<gw>/cmd.
+  services/ble_config_svc.c — same JSON commands as the MQTT topic aeolus/<gw>/cmd.
 
   Web Bluetooth needs a secure context: file:// works in Chrome; if your
   browser refuses, serve with `python3 -m http.server` and open localhost.
@@ -137,7 +137,7 @@
   <h2>Uplink — where recordings go</h2>
   <div class="row radio">
     <label><input type="radio" name="uplink" id="upMqtt" value="mqtt"> MQTT</label>
-    <label><input type="radio" name="uplink" id="upHttps" value="https"> HTTPS (PLP Insight, same as the phone app)</label>
+    <label><input type="radio" name="uplink" id="upHttps" value="https" checked> HTTPS (PLP Insight, same as the phone app)</label>
   </div>
   <div class="hint" style="margin-bottom:.6rem">
     <b>MQTT:</b> each recording as one <code>…/data</code> message (raw ADC, base64) plus a telematic message per visit.<br>
