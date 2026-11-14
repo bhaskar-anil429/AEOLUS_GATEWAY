@@ -17,7 +17,7 @@ Each gateway downloads `aeolus/latest.json` on its first cycle after a restart,
 then every 24 hours by default:
 
 ```json
-{ "version": "V1.76", "url": "https://raw.githubusercontent.com/bhaskar-anil429/AEOLUS_GATEWAY/main/AEOLUS_V1.76.bin" }
+{ "version": "V1.77", "url": "https://raw.githubusercontent.com/bhaskar-anil429/AEOLUS_GATEWAY/main/AEOLUS_V1.77.bin" }
 ```
 
 If `version` is newer than the running firmware, the gateway:
@@ -47,7 +47,7 @@ MQTT, on `aeolus/<gateway-id>/cmd`:
 Install one specific image now:
 
 ```json
-{"cmd":"ota_ready","url":"https://raw.githubusercontent.com/bhaskar-anil429/AEOLUS_GATEWAY/main/AEOLUS_V1.76.bin"}
+{"cmd":"ota_ready","url":"https://raw.githubusercontent.com/bhaskar-anil429/AEOLUS_GATEWAY/main/AEOLUS_V1.77.bin"}
 ```
 
 The config page has the same settings under **Firmware updates (LTE, automatic)**.
@@ -84,7 +84,7 @@ Automatic: add a `sensor` entry to `aeolus/latest.json`. Gateways then send it
 to sensors on an **older** version:
 
 ```json
-{ "version": "V1.76", "url": "https://.../AEOLUS_V1.76.bin",
+{ "version": "V1.77", "url": "https://.../AEOLUS_V1.77.bin",
   "sensor": { "version": 10, "url": "https://.../sensors/PLP_SG_V10.ncd" } }
 ```
 
